@@ -1,8 +1,8 @@
 /*jshint unused:false*/
 import fs from 'fs';
 import path from 'path';
-import { createServer } from 'http';
-import { Server } from 'node-static';
+import chokidar from 'chokidar';
+import browserSync from 'browser-sync';
 import co from 'co';
 import prompt from 'co-prompt';
 import _ from 'underscore';
@@ -10,6 +10,7 @@ import { ncp } from 'ncp';
 import open from 'open';
 import { rootdir, postspath, pagespath } from '../config';
 import { cliColor, getConfig, titleToFilename } from '../helpers';
+import { build } from '../core';
 
 export { init, config, newFile, run, openFile };
 
@@ -18,6 +19,7 @@ function openFile(type, sitePath, file) {
     if (type === 'file') {
         open(path.resolve(sitePath, file));
     } else {
+        // TODO unless we add a --no-watch flag, we can just delegate this to browser-sync
         open(file);
     }
 }
@@ -164,24 +166,67 @@ function newFile(sitePath, type, title, autoOpen) {
 
 function run(sitePath, port, autoOpen) {
     let clc = cliColor();
-    let file = new Server(path.join(sitePath, 'public'));
 
-    console.log(clc.info('Harmonic site is running on http://localhost:' + port));
-    if (autoOpen) {
-        openFile('uri', sitePath, 'http://localhost:' + port);
-    }
-    // Create the server
-    createServer((request, response) => {
-        request.addListener('end', function() {
-            file.serve(request, response, (err) => {
-                if (err) {
-                    console.log(clc.error(
-                        'Error serving ' + request.url + ' - ' + err.message
-                    ));
-                    response.writeHead(err.status, err.headers);
-                    response.end();
-                }
+    return new Promise((fulfill, reject) => {
+        browserSync({
+            server: {
+                baseDir: path.join(sitePath, 'public')
+            },
+            port,
+            open: autoOpen
+        }, (err) => {
+            if (err) return reject(err);
+            // TODO move logging to CLI? (to avoid polluting API)
+            console.log(clc.info(`Harmonic site is running on http://localhost:${port}`));
+            fulfill();
+        });
+    }).then(() => {
+        let buildPromise = Promise.resolve();
+        let buildQueueCount = 0;
+
+        function buildSite() {
+            console.log(arguments);
+
+            // TODO clean up/explain logic
+            if (buildQueueCount === 2) return;
+
+            buildQueueCount++;
+            buildPromise = buildPromise
+                .then(() => build(sitePath))
+                .then(() => {
+                    buildQueueCount--;
+                    console.log('browser sync reload called');
+                    // TODO only reload modified files?
+                    browserSync.reload();
+                });
+        }
+
+        let pathsToWatch = ['src/', 'harmonic.json'].map((p) => path.join(sitePath, p));
+        let watcher = chokidar.watch(pathsToWatch, {
+            // interval: 1000,
+            // TODO compile main.css/whole template outside of project src dir?
+            ignored: /[\/\\](?:\.|main\.css)/,
+            ignoreInitial: true,
+            // ignorePermissionErrors: true,
+            cwd: sitePath
+        });
+
+        watcher
+            .on('add', buildSite)
+            .on('addDir', buildSite)
+            .on('change', buildSite)
+            .on('unlink', buildSite)
+            .on('unlinkDir', buildSite)
+            .on('error', (error) => { console.error('Error occurred', error); });
+
+        return new Promise((fulfill) => {
+            watcher.on('ready', () => {
+                // TODO move logging to CLI? (to avoid polluting API)
+                console.log(clc.info('Watching Harmonic project for changes...'));
+                fulfill({ watcher }); // TODO what else should we return here?
             });
-        }).resume();
-    }).listen(port);
+        });
+    }).catch((err) => { // TODO move catch/logging to CLI?
+        console.error(err);
+    });
 }
