@@ -185,7 +185,6 @@ function run(sitePath, port, autoOpen) {
         let buildQueueCount = 0;
 
         function buildSite() {
-            console.log(arguments);
 
             // TODO clean up/explain logic
             if (buildQueueCount === 2) return;
@@ -195,7 +194,6 @@ function run(sitePath, port, autoOpen) {
                 .then(() => build(sitePath))
                 .then(() => {
                     buildQueueCount--;
-                    console.log('browser sync reload called');
                     // TODO only reload modified files?
                     browserSync.reload();
                 });
